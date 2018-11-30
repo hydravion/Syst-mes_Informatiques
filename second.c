@@ -56,34 +56,21 @@ int main(int argc, char **argv){
     parseAndStock(arg, test, delim);
     count = 0;
 
-
-    // built-in
-
-  if (strcmp(arg[0], "exit") == 0){
-    printf("Adieu monde cruel\n");
-    exit(EXIT_SUCCESS);
-  }
-
-  else if(strcmp(arg[0], "cd") == 0){
-    if (arg[1] == NULL){
-      perror("PATH needed");
-    }
-    printf("%s\n", arg[1]);
-    chdir(arg[1]);
-    getcwd(pathName, PATH_MAX);
-    printf("%s\n", pathName);
-  }
-
-  else if(arg[0][0] != '\0'){
+  if(arg[0][0] != '\0'){
     pid_t pid = fork();
-    if (pid > 0){
-      int wstatus;
-      wait(&wstatus);
-      int ans = WIFEXITED(wstatus);
-      printf("Foreground job exited with code %d\n", wstatus);
-    }
     if (pid == 0){
-      execve(arg[0], arg, NULL);
+      printf("Stdin is descriptor %d\n", fileno(stdin));
+      freopen("/dev/null", "r", stdin);
+      printf("Stdin is now /dev/null and hopefully still fd %d\n",
+         fileno(stdin));
+         execve(arg[0], arg, NULL);
+      freopen("/dev/stdin", "w", stdin);
+      printf("Now we put it back, hopefully its still fd %d\n",
+         fileno(stdin));
+    }
+    else {
+
+
         }
 
         // aller dans le dossier /bin (en testant les différentes concaténations)
