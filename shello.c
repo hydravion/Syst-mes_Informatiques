@@ -230,63 +230,97 @@ Factoriser le code et séparer en plusieurs fichiers
 
 TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO */
 
+int jobMustRunInFg() {
+  return !(user_cmd_bg_flag & RUN_JOB_IN_BG);
+}
+
+int jobMustRunInBg() {
+  return (user_cmd_bg_flag & RUN_JOB_IN_BG);
+}
+
+// int isFgJobRunning() {
+//   return ;
+// }
+
+int isBgJobRunning() {
+  return (fg_bg_status & BG_JOB_RUNNING);
+}
+
+int runJobInFg(pid_t pid) {
+  pid_t w;
+  int wstatus;
+  fg_job_global = pid; // store the fg job pid
+  fg_bg_status |= FG_JOB_RUNNING; // set the flag (fg job is running)
+  user_cmd_bg_flag &= ~RUN_JOB_IN_FG;
+
+  w = waitpid(pid, &wstatus, 0); // wait for the child to finish
+  if (WIFEXITED(wstatus)) {
+    fg_bg_status &= ~FG_JOB_RUNNING; // remove the flag
+    return w;
+  }
+  else {
+    fprintf(stderr, "evalJob(): waitpid(): child didn't terminate normally.\n");
+    return -1;
+  }
+}
+
+int runJobInBg() {
+  if (isBgJobRunning()) {
+    fprintf(stderr, "evalJob(): cannot run two background jobs at the same time.\n");
+    return -1;
+  }
+  fg_bg_status |= BG_JOB_RUNNING; // set the flag (bg job is running)
+  user_cmd_bg_flag &= ~RUN_JOB_IN_BG;
+  sleep(1); // TODO: enlever sleep. Sinon bg job écrit au mauvais moment
+  return -1;
+}
+
+void redirectChildStdinToDevNull() {
+  /* redirect the child's stdin to /dev/null */
+  close(0); // TODO needed?
+  int fd_dev_null = open("/dev/null", O_RDWR); // found on the internet
+  dup2(fd_dev_null, 0);
+  // close(fd_dev_null); // TODO needed?
+}
 
 int evalJob(char **argv) {
-  /*  */
+  /* evalJob evaluates a command to launch a job in the foreground or the background. */
 
-  // found on/inspired by the internet, man waitpid
-  pid_t pid, w;
+  // inspired by the internet, man waitpid
 
+  if (jobMustRunInBg() && isBgJobRunning()) {
+    fprintf(stderr, "evalJob(): two background jobs cannot run at the same time.\n");
+    return -1;
+  }
+
+  pid_t pid;
   pid = fork();
 
-  if (pid == -1) {
+  if (pid == -1) { // ERROR
     fprintf(stderr, "evalJob(): failed to fork().\n");
   }
-  else if (pid == 0) { // executed by the child
 
-    if (user_cmd_bg_flag & RUN_JOB_IN_BG) {
-    /* redirect the child's stdin to /dev/null */
-    close(0); // TODO needed?
-    int fd_dev_null = open("/dev/null", O_RDWR); // found on the internet
-    dup2(fd_dev_null, 0);
-    // close(fd_dev_null); // TODO needed?
+  else if (pid == 0) { // RAN BY CHILD
+
+    if (jobMustRunInBg()) {
+      redirectChildStdinToDevNull();
   }
-
     if (execvpe(argv[0], argv, NULL) == -1) {
       fprintf(stderr, "execvpe: %s\n", strerror(errno)); // TODO: si ca plante faut faire un exit.. changer ca...
     }
   }
-  else {
-    int wstatus;
 
-    if (!(user_cmd_bg_flag & RUN_JOB_IN_BG)) { // !(user_cmd_bg_flag & RUN_JOB_IN_BG) ...... && (user_cmd_bg_flag & RUN_JOB_IN_FG) ?
-      fg_job_global = pid; // store the fg job pid
-      fg_bg_status |= FG_JOB_RUNNING; // set the flag (fg job is running)
-      user_cmd_bg_flag &= ~RUN_JOB_IN_FG;
+  else { // RAN BY PARENT
 
-      w = waitpid(pid, &wstatus, 0);
-      if (WIFEXITED(wstatus)) {
-        fg_bg_status &= ~FG_JOB_RUNNING; // remove the flag
-        return w;
-      }
-      else {
-        fprintf(stderr, "evalJob(): waitpid(): child didn't terminate normally.\n");
-      }
+    if (jobMustRunInFg()) { // !(user_cmd_bg_flag & RUN_JOB_IN_BG) ...... && (user_cmd_bg_flag & RUN_JOB_IN_FG) ?
+      runJobInFg(pid);
     }
-    else if (user_cmd_bg_flag & RUN_JOB_IN_BG) { // && !(user_cmd_bg_flag & RUN_JOB_IN_FG) ?
-      if (fg_bg_status & BG_JOB_RUNNING) {
-        fprintf(stderr, "evalJob(): cannot run two background jobs at the same time.\n");
-        return -1;
-      }
-      fg_bg_status |= BG_JOB_RUNNING; // set the flag (bg job is running)
-      user_cmd_bg_flag &= ~RUN_JOB_IN_BG;
-      sleep(1); // TODO: enlever sleep. Sinon bg job écrit au mauvais moment
-      return -1;
+    else if (jobMustRunInBg()) { // && !(user_cmd_bg_flag & RUN_JOB_IN_FG) ?
+      runJobInBg();
     }
     else {
       fprintf(stderr, "evalJob(): cannot run job both in the foreground and in the background\n");
     }
-
   }
 
   return -1;
