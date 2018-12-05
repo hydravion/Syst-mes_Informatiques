@@ -127,22 +127,11 @@ char *readUserInput() {
 }
 
 void parseAmpersand(char **argv, int argc, int argv_size) {
-  char *cmd = argv[0];
-  char *second_arg = argv[1];
-  int pos_last_char = strlen(cmd)-1;
-  char cmd_last_char[2];
-
-  sprintf(cmd_last_char, "%c", cmd[pos_last_char]);
-
-  if (strcmp(cmd_last_char, "&") == 0) { // if & is included in the command name (eg. gedit&)
-    argv[0][pos_last_char] = '\0'; // remove "&" from the command name
-    user_cmd_bg_flag |= RUN_JOB_IN_BG; // set a flag so it is evaluated in the background
-  }
-
-  else if (argc >= 2 && strcmp(second_arg, "&") == 0) { // if & is the second argument (eg gedit &)
-    // remove the argv[1] from the list of args
-    memmove(argv + 1, argv + 2, sizeof(argv[0]) * (argv_size - 2)); // snippet found on stackoverflow
-    user_cmd_bg_flag |= RUN_JOB_IN_BG; // set a flag so it is evaluated in the background
+  if (strcmp(argv[argc-1], "&") == 0) {
+    // reallocarray(argv, argc-1, sizeof(char*)); // si alloc dynamique
+    // free(argv[argc-1]);
+    argv[argc-1] = NULL;
+    user_cmd_bg_flag |= RUN_JOB_IN_BG;
   }
 }
 
@@ -212,21 +201,29 @@ int evalBuiltin(char **argv) {
 
 /* TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 
-Demander Jérémie de tester ton programme pour avoir son feedback
+Demander à Jérémie de tester ton programme pour avoir son feedback
 
 Checker les TODOs du fichiers
 
-Implémenter tous les signaux
-  Faire fonctionner fonction createSigaction avec pointeur...
+TODO
+Si je fais
+  sleep 10 &
+  ls
+  ls
+Je recois SIGCHLD, et ca fait un waitpid qui bloque la REPL ?
+  Comment éviter l'attente du waitpid ? Je recois SIGCHLD avant la fin du
+  processus enfant..
+TODO
 
 Résoudre problème du sleep() avec bg jobs
   Masquer SIGCHLD ? Vérifier s'il est là entre deux REPL ?
 
 Vérifier que le programme fonctionne correctement
-    Faire bg jobs correctement
-    Utiliser des structs ? Chaque job a des caractéristiques comme run in fg ou bg etc..
+  Faire bg jobs correctement
+  Utiliser des structs ? Chaque job a des caractéristiques comme run in fg ou bg etc..
 
-Factoriser le code et séparer en plusieurs fichiers
+Factoriser le code et
+          /!\ séparer en plusieurs fichiers /!\
 
 TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO */
 
@@ -238,9 +235,9 @@ int jobMustRunInBg() {
   return (user_cmd_bg_flag & RUN_JOB_IN_BG);
 }
 
-// int isFgJobRunning() {
-//   return ;
-// }
+int isFgJobRunning() {
+  return (fg_bg_status & FG_JOB_RUNNING);
+}
 
 int isBgJobRunning() {
   return (fg_bg_status & BG_JOB_RUNNING);
@@ -277,10 +274,11 @@ int runJobInBg() {
 
 void redirectChildStdinToDevNull() {
   /* redirect the child's stdin to /dev/null */
-  close(0); // TODO needed?
+
+  close(STDIN_FILENO); // TODO needed?
   int fd_dev_null = open("/dev/null", O_RDWR); // found on the internet
-  dup2(fd_dev_null, 0);
-  // close(fd_dev_null); // TODO needed?
+  dup2(fd_dev_null, STDIN_FILENO);
+  close(fd_dev_null); // TODO needed?
 }
 
 int evalJob(char **argv) {
@@ -290,6 +288,7 @@ int evalJob(char **argv) {
 
   if (jobMustRunInBg() && isBgJobRunning()) {
     fprintf(stderr, "evalJob(): two background jobs cannot run at the same time.\n");
+    user_cmd_bg_flag &= ~RUN_JOB_IN_BG;
     return -1;
   }
 
@@ -306,20 +305,21 @@ int evalJob(char **argv) {
       redirectChildStdinToDevNull();
   }
     if (execvpe(argv[0], argv, NULL) == -1) {
-      fprintf(stderr, "execvpe: %s\n", strerror(errno)); // TODO: si ca plante faut faire un exit.. changer ca...
+      fprintf(stderr, "execvpe: %s\n", strerror(errno));
+      exit(EXIT_FAILURE);
     }
   }
 
   else { // RAN BY PARENT
 
     if (jobMustRunInFg()) { // !(user_cmd_bg_flag & RUN_JOB_IN_BG) ...... && (user_cmd_bg_flag & RUN_JOB_IN_FG) ?
-      runJobInFg(pid);
+      return runJobInFg(pid);
     }
     else if (jobMustRunInBg()) { // && !(user_cmd_bg_flag & RUN_JOB_IN_FG) ?
-      runJobInBg();
+      return runJobInBg();
     }
     else {
-      fprintf(stderr, "evalJob(): cannot run job both in the foreground and in the background\n");
+      fprintf(stderr, "evalJob(): job must run in the foreground or in the background\n");
     }
   }
 
@@ -341,6 +341,7 @@ int evalInput(char *user_input) {
   else {
     return evalJob(argv);
   }
+  // TODO: gérer commandes non-valides
 
   return -1;
 }
@@ -375,7 +376,7 @@ void printWelcomeMessage() {
 void redirectSignalToForegroundJob(int sig) {
   /* redirects a signal to the foreground job */
 
-  if (fg_bg_status & FG_JOB_RUNNING) {
+  if (isFgJobRunning()) {
     kill(fg_job_global, sig); // TODO: how to implement it without using global variables ?
     fg_bg_status &= ~FG_JOB_RUNNING;
   }
@@ -387,10 +388,10 @@ void reapBackgroundJob(int sig) {
 
   int wstatus, w;
 
-  if (fg_bg_status & BG_JOB_RUNNING) {
-    // TODO: comparer pid du processus avec pid du bg job
-    w = waitpid(bg_job_global, &wstatus, 0); // TODO: how to implement it without using global variables ?
-                                      // Use sa_sigaction to determine the bg_job's pid ?
+  if (isBgJobRunning()) { /* TODO TODO TODO Ca bloque avec un bg job à cause du waitpid, utiliser WNOHANG ? TODO TODO TODO */
+                                              // TODO: comparer pid du processus avec pid du bg job
+    w = waitpid(bg_job_global, &wstatus, 0);  // TODO: how to implement it without using global variables ?
+                                              // Use sa_sigaction to determine the bg_job's pid ?
     fg_bg_status &= ~BG_JOB_RUNNING; // remove the flag
     printf(CYAN "\tshello: Background job exited with code %d.\n" RESET, w);
   }
@@ -399,56 +400,37 @@ void reapBackgroundJob(int sig) {
 void redirectSignalToAllJobs(int sig) {
   /* redirects a signal to the foreground job */
 
-  if (FG_JOB_RUNNING) {
+  if (isFgJobRunning()) {
     kill(fg_job_global, sig); // TODO: how to implement it without using global variables ?
   }
-  if (BG_JOB_RUNNING) {
+  if (isBgJobRunning()) {
     kill(bg_job_global, sig);
   }
-
-  // TODO: check there are no orphan processes left and terminate the shell properly.
-  // Comment ne pas créer de zombies ? Perform a waitpid before exiting ?
 }
 
-//TODO: issue with the function pointer.. ?
-
-// void createSigaction(int sig, void (*sa_handler)(int), int flags) {
-//   struct sigaction sa; // found on the internet
-//   sigemptyset(&sa.sa_mask);
-//   sa.sa_flags = 0; // METTRE SA_RESTART DANS CERTAINS CAS
-//   sa.sa_handler = sa_handler;
-//
-//   sigaction(sig, &sa, NULL);
-// }
-
-void configureShell() {
-  /*  */
-
+void createSigaction(int sig, void (*my_sa_handler)(int), int flags) {
   struct sigaction sa; // found on the internet
   sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_RESTART;
-  sa.sa_handler = redirectSignalToForegroundJob;
+  sa.sa_flags = flags;
+  sa.sa_handler = my_sa_handler;
 
-  sigaction(SIGINT, &sa, NULL);
+  sigaction(sig, &sa, NULL);
+}
 
-  sigaction(SIGINT, &sa, NULL);
+void configureShell() {
+  /* specifies how to handle certain signals */
+
   // Ignore the SIGTERM and SIGQUIT signals
-  // createSigaction(SIGTERM, SIG_IGN, ADD FLAGS); // TODO flags..
-  // createSigaction(SIGQUIT, SIG_IGN, );
-  //
-  // /* Redirect signals */
-  //
-  // // Redirect SIGINT to the foreground job, if one is running
-  // createSigaction(SIGINT, redirectSignalToForegroundJob, );
-  // // Redirect SIGHUP to all jobs
-  // createSigaction(SIGHUP, redirectSignalToAllJobs, );
+  createSigaction(SIGQUIT, SIG_IGN, SA_RESTART);
+  createSigaction(SIGTERM, SIG_IGN, SA_RESTART); // TODO flags.. ??
 
-  struct sigaction sa2; // found on the internet
-  sigemptyset(&sa2.sa_mask);
-  sa2.sa_flags = SA_RESTART;
-  sa2.sa_handler = reapBackgroundJob;
+  // Redirect SIGINT to the foreground job, if one is running
+  createSigaction(SIGINT, redirectSignalToForegroundJob, SA_RESTART);
+  // Redirect SIGHUP to all jobs
+  createSigaction(SIGHUP, redirectSignalToAllJobs, SA_RESTART); // TODO flag ??
 
-  sigaction(SIGCHLD, &sa2, NULL);
+  // Properly reap a finished background job
+  createSigaction(SIGCHLD, reapBackgroundJob, SA_RESTART);
 
 }
 
